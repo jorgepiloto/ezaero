@@ -67,21 +67,29 @@ def _build_panel(lifting_surface, i, j, m, n):
     x_D = x_B + dx_BD
     x_pc = (q - c_pc / 4) + (i + 3 / 4) * dx_pc
     """
+
     x_A = (r) + i * dx_AC
     x_B = (s) + i * dx_BD
     x_C = x_A + dx_AC
     x_D = x_B + dx_BD
-    x_pc = (q) + (i + 3 / 4) * dx_pc
+    x_pc = (q) + (i + 3 / 4) * dx_pc  - lifting_surface.root_chord / 4
 
-    x = np.array([x_A, x_B, x_D, x_C]) - lifting_surface.root_chord / 4
-    y = np.array([y_A, y_B, y_D, y_C])
+    # Solves for panel displacement due to original surface offset
+    mirror = (True if y_A <0 else False)
+    if mirror:
+        r_offset = lifting_surface.r_offset * np.array([1, -1, 1])
+    else:
+        r_offset = lifting_surface.r_offset
+
+    x = np.array([x_A, x_B, x_D, x_C])  - lifting_surface.root_chord / 4
+    y = np.array([y_A, y_B, y_D, y_C]) 
     z = np.tan(lifting_surface.dihedral_angle) * np.abs(y)
     panel = np.stack((x, y, z), axis=-1)
 
     z_pc = np.tan(lifting_surface.dihedral_angle) * np.abs(y_pc)
     pc = np.array([x_pc, y_pc, z_pc])
 
-    return panel, pc
+    return panel + r_offset, pc + r_offset
 
 
 def mesh_surface(lifting_surface, m=4, n=16):

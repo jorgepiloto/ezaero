@@ -11,6 +11,9 @@ References
 from dataclasses import dataclass
 
 import numpy as np
+import plotly.graph_objects as go
+
+from ezaero.vlm.meshing import mesh_surface
 
 from ezaero.vlm.plotting import (
     plot_cl_distribution_on_wing,
@@ -19,247 +22,53 @@ from ezaero.vlm.plotting import (
 )
 
 
-@dataclass
-class WingParameters:
-    """
-    Container for the geometric parameters of the wing.
-
-    Attributes
-    ----------
-    root_chord : float
-        Chord at root of the wing.
-    tip_chord : float
-        Chord at tip of the wing.
-    planform_wingspan : float
-        Wingspan of the planform.
-    sweep_angle : float
-        Sweep angle of the 1/4 chord line, expressed in radians.
-    dihedral_angle : float
-        Dihedral angle, expressed in radians.
-    """
-
-    root_chord: float = 1
-    tip_chord: float = 1
-    planform_wingspan: float = 4
-    sweep_angle: float = 0
-    dihedral_angle: float = 0
-
-
-@dataclass
-class MeshParameters:
-    """
-    Container for the wing mesh parameters.
-
-    Attributes
-    ----------
-    m : int
-        Number of chordwise panels.
-    n : int
-        Number of spanwise panels.
-    """
-
-    m: int = 4
-    n: int = 16
-
-
-@dataclass
-class FlightConditions:
-    """
-    Container for the flight conditions.
-
-    Attributes
-    ----------
-    ui : float
-        Free-stream flow velocity.
-    angle_of_attack : float
-        Angle of attack of the wing, expressed in radians.
-    rho : float
-        Free-stream flow density.
-    """
-
-    ui: float = 100
-    aoa: float = np.pi
-    rho: float = 1
-
-
-@dataclass
-class SimulationResults:
-    """
-    Container for the resulting distributions from the steady VLM simulation.
-
-    Attributes
-    ----------
-    dp : np.ndarray, shape (m, n)
-        Distribution of pressure difference between lower and upper surfaces.
-    dL : np.ndarray, shape (m, n)
-        Lift distribution.
-    cl : np.ndarray, shape (m, n)
-        Lift coefficient distribution.
-    cl_wing : float
-        Wing lift coefficient.
-    cl_span : np.ndarray, shape (n, )
-        Spanwise lift coefficient distribution.
-    """
-
-    dp: np.ndarray
-    dL: np.ndarray
-    cl: np.ndarray
-    cl_wing: float
-    cl_span: np.ndarray
-
-
-class Simulation:
-    """
-    Simulation runner.
-
-    Attributes
-    ----------
-    wing : WingParameters
-        Wing geometry definition.
-    mesh : MeshParameters
-        Mesh specification for the wing.
-    flight_conditions : FlightConditions
-        Flight conditions for the simulation.
-    """
-
+class VLM_solver:
     def __init__(
-        self,
-        wing: WingParameters,
-        mesh: MeshParameters,
-        flight_conditions: FlightConditions,
+        self, part_list, mesh_conf=None, alpha=np.pi / 36, Uinf=10.0, rho=1.225
     ):
-        self.wing = wing
-        self.mesh = mesh
-        self.flight_conditions = flight_conditions
+        """ Initializes the simulation """
 
-    def run(self):
-        """
-        Run end-to-end steady VLM simulation.
+        # Count the number of parts
+        self.N_parts = len(part_list)
 
-        Returns
-        -------
-        SimulationResults
-            Object containing the results of the steady VLM simulation.
-        """
-        self._build_wing_panels()
-        self._build_wing_vortex_panels()
-        self._calculate_panel_normal_vectors()
-        self._calculate_wing_planform_surface()
-        self._build_wake()
-        self._calculate_influence_matrix()
-        self._calculate_rhs()
-        self._solve_net_panel_circulation_distribution()
-        self.distributions = self._calculate_aero_distributions_from_circulation()
-        return self.distributions
+        # Check if mesh_list available and shares part_list dimensions
+        if not mesh_conf:
+            mesh_conf = (np.array([4, 12]) * np.ones((self.N_parts,2))).astype(int)
+        else:
+            assert len(mesh_conf) == self.N_parts
 
-    def plot_wing(
-        self,
-        fig=None,
-        color="lightgrey",
-        limit_color="black",
-        cp_color="red",
-        marker=2,
-        show_cp=True,
-    ):
-        """
-        Generate 3D plot of wing panels, vortex panels, and panel control points.
-        """
+        # Assign part and mesh configuration collections
+        self.part_list, self.mesh_conf = part_list, mesh_conf
 
-        try:
-            fig = plot_panels(
-                self.wing_panels, fig=fig, color=color, limit_color=limit_color
-            )
-            if show_cp:
-                fig = plot_control_points(
-                    self.cpoints, fig=fig, color=cp_color, marker_size=marker
-                )
+        # Build a dictionary for model data: {"part", [MN, panels, cpoints]}
+        self.parts_data = {part: [NM] for (part, NM) in zip(part_list, mesh_conf)}
 
-        except AttributeError as e:
-            message = f"An error occurred. Make sure you have already run this simulation.\n{e}"
-            raise AttributeError(message)
+        # Store simulation conditions
+        self.alpha, self.Uinf, self.rho = alpha, Uinf, rho
+
+        # Generate a private variable for checking if simulation was executed
+        self._executed = False
+
+        # Allocate results variable
+        self.results = None
+
+    def plot_model(self, fig=None, color="lightgray"):
+        """ Returns a graphical representation of model's geometry """
+
+        # Check if figure available
+        if not fig:
+            fig = go.Figure()
+            fig.update_layout(scene_aspectmode="data")
+
+        # Add each part to the figure
+        for part in self.part_list:
+            fig = part.plot(fig=fig, color=color, label=part.name)
 
         return fig
 
-    def plot_cl(self):
+    def _build_panels(self):
         """
-        Plot lift coefficient distribution on the wing.
-        """
-        try:
-            fig = plot_cl_distribution_on_wing(
-                self.wing_panels, self.distributions, fig=None, colorscale=None
-            )
-        except AttributeError as e:
-            message = f"An error occurred. Make sure you have already run this simulation.\n{e}"
-            raise AttributeError(message)
-
-        return fig
-
-    def _build_panel(self, i, j):
-        """
-        Build a wing panel indexed by its chord and spanwise indices.
-
-        Parameters
-        ----------
-        i : int
-            Panel chordwise index.
-        j : int
-            Panel spanwise index.
-
-        Returns
-        -------
-        panel : np.ndarray, shape (4, 3)
-            Array containing the (x,y,z) coordinates of the (`i`, `j`)-th panel's
-            vertices (sorted A-B-D-C).
-        pc : np.ndarray, shape (3, )
-            (x,y,z) coordinates of the (`i`, `j`)-th panel's collocation point.
-        """
-
-        dy = self.wing.planform_wingspan / self.mesh.n
-        y_A = -self.wing.planform_wingspan / 2 + j * dy
-        y_B = y_A + dy
-        y_C, y_D = y_A, y_B
-        y_pc = y_A + dy / 2
-
-        # chord law evaluation
-        c_AC, c_BD, c_pc = [
-            get_chord_at_section(
-                y,
-                root_chord=self.wing.root_chord,
-                tip_chord=self.wing.tip_chord,
-                span=self.wing.planform_wingspan,
-            )
-            for y in (y_A, y_B, y_pc)
-        ]
-
-        # division of the chord in m equal panels
-        dx_AC, dx_BD, dx_pc = [c / self.mesh.m for c in (c_AC, c_BD, c_pc)]
-
-        # r,s,q are the X coordinates of the quarter chord line at spanwise
-        # locations: y_A, y_B and y_pc respectively
-        r, s, q = [
-            get_quarter_chord_x(y, cr=self.wing.root_chord, sweep=self.wing.sweep_angle)
-            for y in (y_A, y_B, y_pc)
-        ]
-
-        x_A = (r - c_AC / 4) + i * dx_AC
-        x_B = (s - c_BD / 4) + i * dx_BD
-        x_C = x_A + dx_AC
-        x_D = x_B + dx_BD
-        x_pc = (q - c_pc / 4) + (i + 3 / 4) * dx_pc
-
-        x = np.array([x_A, x_B, x_D, x_C])
-        y = np.array([y_A, y_B, y_D, y_C])
-        z = np.tan(self.wing.dihedral_angle) * np.abs(y)
-        panel = np.stack((x, y, z), axis=-1)
-
-        z_pc = np.tan(self.wing.dihedral_angle) * np.abs(y_pc)
-        pc = np.array([x_pc, y_pc, z_pc])
-
-        return panel, pc
-
-    def _build_wing_panels(self):
-        """
-        Build wing panels and collocation points.
+        Build panels and collocation points.
 
         Creates
         -------
@@ -269,34 +78,46 @@ class Simulation:
             Array containing the (x,y,z) coordinates of all collocation points.
         """
 
-        self.wing_panels = np.empty((self.mesh.m, self.mesh.n, 4, 3))
-        self.cpoints = np.empty((self.mesh.m, self.mesh.n, 3))
 
-        for i in range(self.mesh.m):
-            for j in range(self.mesh.n):
-                self.wing_panels[i, j], self.cpoints[i, j] = self._build_panel(i, j)
+        for part, MN in zip(self.part_list, self.mesh_conf):
 
-    def _build_wing_vortex_panels(self):
+            # Solve panels and cpoints for model part
+            panels, cpoints = mesh_surface(part, *MN)
+
+            # Append to global data dictionary
+            self.parts_data.update({part: [MN, panels, cpoints]})
+
+    def _build_vortex_panels(self):
         """
         Creates
         -------
         aic : np.ndarray, shape (m, n, 4, 3)
             Array containing the (x,y,z) coordinates of all vortex panel vertices.
         """
-        X, Y, Z = [self.wing_panels[:, :, :, i] for i in range(3)]
 
-        dxv = (X[:, :, [3, 2, 2, 3]] - X[:, :, [0, 1, 1, 0]]) / 4
-        XV = X + dxv
+        for part, data in self.parts_data.items():
 
-        YV = Y
+            # Unpack useful data
+            MN, panels, _ = data
+            m, n = MN
 
-        ZV = np.empty((self.mesh.m, self.mesh.n, 4))
-        Z01 = Z[:, :, [0, 1]]
-        dzv = Z[:, :, [3, 2]] - Z01
-        ZV[:, :, [0, 1]] = Z01 + 1 / 4 * dzv
-        ZV[:, :, [3, 2]] = Z01 + 5 / 4 * dzv
+            # Solve panels coordinates positions
+            X, Y, Z = [panels[:, :, :, i] for i in range(3)]
 
-        self.vortex_panels = np.stack([XV, YV, ZV], axis=3)
+            dxv = (X[:, :, [3, 2, 2, 3]] - X[:, :, [0, 1, 1, 0]]) / 4
+            XV = X + dxv
+
+            YV = Y
+
+            ZV = np.empty((m, n, 4))
+            Z01 = Z[:, :, [0, 1]]
+            dzv = Z[:, :, [3, 2]] - Z01
+            ZV[:, :, [0, 1]] = Z01 + 1 / 4 * dzv
+            ZV[:, :, [3, 2]] = Z01 + 5 / 4 * dzv
+
+            vortex_panels = np.stack([XV, YV, ZV], axis=3)
+
+            self.parts_data[part].append(vortex_panels)
 
     def _calculate_panel_normal_vectors(self):
         """
@@ -308,11 +129,19 @@ class Simulation:
         normals : np.ndarray, shape (m, n, 3)
             Array containing the normal vectors to all wing panels.
         """
-        d1 = self.wing_panels[:, :, 2] - self.wing_panels[:, :, 0]
-        d2 = self.wing_panels[:, :, 1] - self.wing_panels[:, :, 3]
-        nv = np.cross(d1, d2)
 
-        self.normals = nv / np.linalg.norm(nv, ord=2, axis=2, keepdims=True)
+        for part, data in self.parts_data.items():
+
+            # Unpack variables
+            panels = data[1]
+
+            d1 = panels[:, :, 2] - panels[:, :, 0]
+            d2 = panels[:, :, 1] - panels[:, :, 3]
+            nv = np.cross(d1, d2)
+
+            normals = nv / np.linalg.norm(nv, ord=2, axis=2, keepdims=True)
+
+            self.parts_data[part].append(normals)
 
     def _calculate_wing_planform_surface(self):
         """
@@ -324,13 +153,20 @@ class Simulation:
             Array containing the planform (projected) surface of each panel.
         """
 
-        x, y = [self.wing_panels[:, :, :, i] for i in range(2)]
+        for part, data in self.parts_data.items():
 
-        # shoelace formula to calculate flat polygon area (XY projection)
-        einsum_str = "ijk,ijk->ij"
-        d1 = np.einsum(einsum_str, x, np.roll(y, 1, axis=2))
-        d2 = np.einsum(einsum_str, y, np.roll(x, 1, axis=2))
-        self.panel_surfaces = 0.5 * np.abs(d1 - d2)
+            # Unpack data
+            panels = data[1]
+
+            x, y = [panels[:, :, :, i] for i in range(2)]
+
+            # shoelace formula to calculate flat polygon area (XY projection)
+            einsum_str = "ijk,ijk->ij"
+            d1 = np.einsum(einsum_str, x, np.roll(y, 1, axis=2))
+            d2 = np.einsum(einsum_str, y, np.roll(x, 1, axis=2))
+            panel_surfaces = 0.5 * np.abs(d1 - d2)
+
+            self.parts_data[part].append(panel_surfaces)
 
     def _build_wake(self, offset=300):
         """
@@ -346,20 +182,29 @@ class Simulation:
             Array containing the (x,y,z) coordinates of the panel vertices that
             form the steady wake.
         """
-        self.wake = np.empty((self.mesh.n, 4, 3))
-        self.wake[:, [0, 1]] = self.vortex_panels[self.mesh.m - 1][:, [3, 2]]
-        delta = (
-            offset
-            * self.wing.planform_wingspan
-            * np.array(
-                [
-                    np.cos(self.flight_conditions.aoa),
-                    0,
-                    np.sin(self.flight_conditions.aoa),
-                ]
+
+        for part, data in self.parts_data.items():
+
+            # Unpack data
+            (m, n), panels, _, vortex_panels, *_ = data
+
+            wake = np.empty((n, 4, 3))
+            wake[:, [0, 1]] = vortex_panels[m - 1][:, [3, 2]]
+            delta = (
+                offset
+                * part.planform_wingspan
+                * np.array(
+                    [
+                        np.cos(self.alpha),
+                        0,
+                        np.sin(self.alpha),
+                    ]
+                )
             )
-        )
-        self.wake[:, [3, 2]] = self.wake[:, [0, 1]] + delta
+            wake[:, [3, 2]] = wake[:, [0, 1]] + delta
+
+            self.parts_data[part].append(wake)
+
 
     def _calculate_wing_influence_matrix(self):
         """
@@ -447,27 +292,18 @@ class Simulation:
         cl_span = cl.sum(axis=0) / m
         return SimulationResults(dL=dL, dp=dp, cl=cl, cl_wing=cl_wing, cl_span=cl_span)
 
+    def run(self, force=False):
+        """ Returns simulation results """
 
-def get_quarter_chord_x(y, cr, sweep):
-    # slope of the quarter chord line
-    p = np.tan(sweep)
-    return cr / 4 + p * abs(y)
+        # Check if simualtion was previously run or forced condition
+        if self._executed and force is False:
+            return self.results
 
+        else:
 
-def get_chord_at_section(y, root_chord, tip_chord, span):
-    c = root_chord + (tip_chord - root_chord) * abs(2 * y / span)
-    return c
-
-
-def norm_23_ext(v):
-    return np.linalg.norm(v, ord=2, axis=3, keepdims=True)
-
-
-def biot_savart(r1):
-    r2 = np.roll(r1, shift=-1, axis=2)
-    cp = np.cross(r1, r2)
-    d1 = r2 - r1
-    d2 = r1 / norm_23_ext(r1) - r2 / norm_23_ext(r2)
-    vel = np.einsum("ijkl,ijkl->ijk", d1, d2)[:, :, :, np.newaxis]
-    vel = -1 / (4 * np.pi) * cp / (norm_23_ext(cp) ** 2) * vel
-    return vel.sum(axis=2)
+            # Generate panels over each part of the model
+            self._build_panels()
+            self._build_vortex_panels()
+            self._calculate_panel_normal_vectors()
+            self._calculate_wing_planform_surface()
+            self._build_wake()

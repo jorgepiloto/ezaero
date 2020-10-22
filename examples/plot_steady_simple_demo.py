@@ -1,37 +1,35 @@
-"""
-Simple steady VLM demo
-======================
-
-Minimal example of simulation execution.
-"""
-import time
+""" Test example """
 
 import numpy as np
+import plotly.graph_objects as go
 
-import ezaero.vlm.steady as vlm
+from ezaero.vlm.lifting_surface import LiftingSurface
+from ezaero.vlm.steady import VLM_solver
 
-# definition of wing, mesh and flight condition parameters
-wing = vlm.WingParameters(
+# Parts definition
+wing_root = LiftingSurface(
+    r_offset=np.array([0, 0, 0]),
     root_chord=1,
-    tip_chord=0.6,
+    tip_chord=0.25,
     planform_wingspan=4,
     sweep_angle=30 * np.pi / 180,
-    dihedral_angle=15 * np.pi / 180,
+    dihedral_angle=10 * np.pi / 180,
+    name="Inner wing",
 )
-mesh = vlm.MeshParameters(m=4, n=16)
-flcond = vlm.FlightConditions(ui=100, aoa=3 * np.pi / 180, rho=1.0)
 
-sim = vlm.Simulation(wing=wing, mesh=mesh, flight_conditions=flcond)
+wing_tip = LiftingSurface(
+    r_offset=wing_root.LE_tip,
+    root_chord=0.25,
+    tip_chord=0.05,
+    planform_wingspan=1,
+    sweep_angle=30 * np.pi / 180,
+    dihedral_angle=45 * np.pi / 180,
+    name="Outer wing",
+)
 
-start = time.time()
-res = sim.run()
-print(f"Wing lift coefficient: {res.cl_wing}")
-print(f"Elapsed time: {time.time() - start} s")
+model = [wing_root, wing_tip]
 
-# plot wing panels, vortex panels, and collocation points
-wing_figure = sim.plot_wing()
-wing_figure.show()
 
-# plot cl distribution on wing
-cl_figure = sim.plot_cl()
-cl_figure.show()
+sim = VLM_solver(model)
+sim.run()
+print([len(sim.parts_data[part]) for part in sim.part_list])

@@ -48,3 +48,17 @@ def get_chord_at_section(y, root_chord, tip_chord, span):
 
     c = root_chord + (tip_chord - root_chord) * abs(2 * y / span)
     return c
+
+def norm_23_ext(v):
+    return np.linalg.norm(v, ord=2, axis=3, keepdims=True)
+
+
+def biot_savart(r1):
+    """ Computes the Biott-Savart law """
+    r2 = np.roll(r1, shift=-1, axis=2)
+    cp = np.cross(r1, r2)
+    d1 = r2 - r1
+    d2 = r1 / norm_23_ext(r1) - r2 / norm_23_ext(r2)
+    vel = np.einsum("ijkl,ijkl->ijk", d1, d2)[:, :, :, np.newaxis]
+    vel = -1 / (4 * np.pi) * cp / (norm_23_ext(cp) ** 2) * vel
+    return vel.sum(axis=2)

@@ -15,6 +15,7 @@ class LiftingSurface:
         planform_wingspan: float = 4,
         sweep_angle: float = 0,
         dihedral_angle: float = 0,
+        name="wing",
     ):
 
         """Initializes a LiftingSurface instance
@@ -42,6 +43,11 @@ class LiftingSurface:
         self.planform_wingspan = planform_wingspan
         self.sweep_angle = sweep_angle
         self.dihedral_angle = dihedral_angle
+        self.name = name
+
+    def __repr__(self):
+        """ Returns a human readable representation of the object """
+        return f"LiftingSurface = {self.name}"
 
     @property
     def LE_root(self):
