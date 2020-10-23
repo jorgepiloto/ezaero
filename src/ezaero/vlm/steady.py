@@ -197,7 +197,7 @@ class VLM_solver:
 
             self.all_surfaces.append(panel_surfaces)
 
-    def _build_wake(self, offset=2):
+    def _build_wake(self, offset=300):
         """
         Build the steady wake vortex panels.
 
@@ -350,18 +350,33 @@ class VLM_solver:
             g = g[mn:]
 
     def _calculate_aero_distributions_from_circulation(self):
-        m, n = self.mesh.m, self.mesh.n
-        rho, ui = (
-            self.rho,
-            self.Uinf,
-        )
-        bp = self.wing.planform_wingspan
-        dL = self.net_circulation * rho * ui * bp / n
-        dp = dL / self.panel_surfaces
-        cl = dp / (0.5 * rho * ui ** 2)
-        cl_wing = dL.sum() / (0.5 * rho * ui ** 2 * self.panel_surfaces.sum())
-        cl_span = cl.sum(axis=0) / m
-        return SimulationResults(dL=dL, dp=dp, cl=cl, cl_wing=cl_wing, cl_span=cl_span)
+        """ Solves for all aerodynamic properties """
+
+        # Allocate variables
+        self.all_dL = []
+        self.all_dp = []
+        self.all_cl = []
+        self.all_cl_wing = []
+
+        for part, panels, (m, n), surfaces, circulation in zip(
+            self.all_parts,
+            self.all_panels,
+            self.all_meshconf,
+            self.all_surfaces,
+            self.all_circulations,
+        ):
+
+            rho, Uinf = self.rho, self.Uinf
+            bp = part.planform_wingspan
+            dL = circulation * rho * Uinf * bp / n
+            dp = dL / surfaces
+            cl = dp / (0.5 * rho * Uinf ** 2)
+            cl_wing = dL.sum() / (0.5 * rho * Uinf ** 2 * surfaces.sum())
+
+            self.all_dL.append(dL)
+            self.all_dp.append(dp)
+            self.all_cl.append(cl)
+            self.all_cl_wing.append(cl_wing)
 
     def run(self, force=False):
         """ Returns simulation results """
@@ -383,3 +398,4 @@ class VLM_solver:
             self._calculate_influence_matrix()
             self._calculate_rhs()
             self._solve_net_panel_circulation_distribution()
+            self._calculate_aero_distributions_from_circulation()
