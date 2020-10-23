@@ -14,7 +14,6 @@ import numpy as np
 import plotly.graph_objects as go
 
 from ezaero.vlm.meshing import mesh_surface
-
 from ezaero.vlm.plotting import (
     plot_cl_distribution_on_wing,
     plot_control_points,
@@ -28,30 +27,31 @@ class VLM_solver:
     ):
         """ Initializes the simulation """
 
+        # Generate a private variable for checking if simulation was executed
+        self._executed = False
+
         # Count the number of parts
         self.N_parts = len(part_list)
 
         # Check if mesh_list available and shares part_list dimensions
         if not mesh_conf:
-            mesh_conf = (np.array([4, 12]) * np.ones((self.N_parts,2))).astype(int)
+            mesh_conf = (np.array([4, 12]) * np.ones((self.N_parts, 2))).astype(int)
         else:
             assert len(mesh_conf) == self.N_parts
-
-        # Assign part and mesh configuration collections
-        self.part_list, self.mesh_conf = part_list, mesh_conf
-
-        # Build a dictionary for model data: {"part", [MN, panels, cpoints]}
-        self.parts_data = {part: [NM] for (part, NM) in zip(part_list, mesh_conf)}
 
         # Store simulation conditions
         self.alpha, self.Uinf, self.rho = alpha, Uinf, rho
 
-        # Generate a private variable for checking if simulation was executed
-        self._executed = False
-
         # Allocate results variable
-        self.all_panels, self.all_cpoints = [], []
-        self.results = None
+        self.all_parts = part_list
+        self.all_meshconf = [mn for mn in mesh_conf]
+        self.all_panels = []
+        self.all_cpoints = []
+        self.all_vortex_panels = []
+        self.all_normals = []
+        self.all_surfaces = []
+        self.all_wakes = []
+        self.all_results = []
 
     def plot_model(self, fig=None, color="lightgray"):
         """ Returns a graphical representation of model's geometry """
@@ -62,7 +62,7 @@ class VLM_solver:
             fig.update_layout(scene_aspectmode="data")
 
         # Add each part to the figure
-        for part in self.part_list:
+        for part in self.all_parts:
             fig = part.plot(fig=fig, color=color, label=part.name)
 
         return fig
@@ -95,14 +95,12 @@ class VLM_solver:
             Array containing the (x,y,z) coordinates of all collocation points.
         """
 
-
-        for part, MN in zip(self.part_list, self.mesh_conf):
+        for part, MN in zip(self.all_parts, self.all_meshconf):
 
             # Solve panels and cpoints for model part
             panels, cpoints = mesh_surface(part, *MN)
 
             # Append to global data dictionary
-            self.parts_data.update({part: [MN, panels, cpoints]})
             self.all_panels.append(panels)
             self.all_cpoints.append(cpoints)
 
@@ -114,11 +112,9 @@ class VLM_solver:
             Array containing the (x,y,z) coordinates of all vortex panel vertices.
         """
 
-        for part, data in self.parts_data.items():
-
-            # Unpack useful data
-            MN, panels, _ = data
-            m, n = MN
+        for part, (m, n), panels in zip(
+            self.all_parts, self.all_meshconf, self.all_panels
+        ):
 
             # Solve panels coordinates positions
             X, Y, Z = [panels[:, :, :, i] for i in range(3)]
@@ -136,7 +132,7 @@ class VLM_solver:
 
             vortex_panels = np.stack([XV, YV, ZV], axis=3)
 
-            self.parts_data[part].append(vortex_panels)
+            self.all_vortex_panels.append(vortex_panels)
 
     def _calculate_panel_normal_vectors(self):
         """
@@ -149,10 +145,7 @@ class VLM_solver:
             Array containing the normal vectors to all wing panels.
         """
 
-        for part, data in self.parts_data.items():
-
-            # Unpack variables
-            panels = data[1]
+        for panels in self.all_panels:
 
             d1 = panels[:, :, 2] - panels[:, :, 0]
             d2 = panels[:, :, 1] - panels[:, :, 3]
@@ -160,7 +153,7 @@ class VLM_solver:
 
             normals = nv / np.linalg.norm(nv, ord=2, axis=2, keepdims=True)
 
-            self.parts_data[part].append(normals)
+            self.all_normals.append(normals)
 
     def _calculate_wing_planform_surface(self):
         """
@@ -172,10 +165,7 @@ class VLM_solver:
             Array containing the planform (projected) surface of each panel.
         """
 
-        for part, data in self.parts_data.items():
-
-            # Unpack data
-            panels = data[1]
+        for panels in self.all_panels:
 
             x, y = [panels[:, :, :, i] for i in range(2)]
 
@@ -185,7 +175,7 @@ class VLM_solver:
             d2 = np.einsum(einsum_str, y, np.roll(x, 1, axis=2))
             panel_surfaces = 0.5 * np.abs(d1 - d2)
 
-            self.parts_data[part].append(panel_surfaces)
+            self.all_surfaces.append(panel_surfaces)
 
     def _build_wake(self, offset=300):
         """
@@ -202,10 +192,9 @@ class VLM_solver:
             form the steady wake.
         """
 
-        for part, data in self.parts_data.items():
-
-            # Unpack data
-            (m, n), panels, _, vortex_panels, *_ = data
+        for part, panels, (m, n), vortex_panels in zip(
+            self.all_parts, self.all_panels, self.all_meshconf, self.all_vortex_panels
+        ):
 
             wake = np.empty((n, 4, 3))
             wake[:, [0, 1]] = vortex_panels[m - 1][:, [3, 2]]
@@ -222,8 +211,7 @@ class VLM_solver:
             )
             wake[:, [3, 2]] = wake[:, [0, 1]] + delta
 
-            self.parts_data[part].append(wake)
-
+            self.all_wakes.append(wake)
 
     def _calculate_wing_influence_matrix(self):
         """
