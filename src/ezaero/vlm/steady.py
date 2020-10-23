@@ -50,6 +50,7 @@ class VLM_solver:
         self._executed = False
 
         # Allocate results variable
+        self.all_panels, self.all_cpoints = [], []
         self.results = None
 
     def plot_model(self, fig=None, color="lightgray"):
@@ -63,6 +64,22 @@ class VLM_solver:
         # Add each part to the figure
         for part in self.part_list:
             fig = part.plot(fig=fig, color=color, label=part.name)
+
+        return fig
+
+    def plot_mesh(self, fig=None, color="blue"):
+
+        # Check if figure available
+        if not fig:
+            fig = go.Figure()
+            fig.update_layout(scene_aspectmode="data")
+
+        if not self._executed:
+            self._build_panels()
+
+        for panels, cpoints in zip(self.all_panels, self.all_cpoints):
+            fig = plot_panels(panels, fig=fig)
+            fig = plot_control_points(cpoints, fig=fig)
 
         return fig
 
@@ -86,6 +103,8 @@ class VLM_solver:
 
             # Append to global data dictionary
             self.parts_data.update({part: [MN, panels, cpoints]})
+            self.all_panels.append(panels)
+            self.all_cpoints.append(cpoints)
 
     def _build_vortex_panels(self):
         """

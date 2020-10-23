@@ -31,5 +31,5 @@ model = [wing_root, wing_tip]
 
 
 sim = VLM_solver(model)
-sim.run()
-print([len(sim.parts_data[part]) for part in sim.part_list])
+fig = sim.plot_mesh()
+fig.show()
