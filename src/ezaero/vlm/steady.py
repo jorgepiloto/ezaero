@@ -14,6 +14,8 @@ import numpy as np
 import plotly.graph_objects as go
 
 from ezaero.vlm.meshing import mesh_surface
+from ezaero.vlm.utils import biot_savart
+
 from ezaero.vlm.plotting import (
     plot_cl_distribution_on_wing,
     plot_control_points,
@@ -222,12 +224,22 @@ class VLM_solver:
         aic : np.ndarray, shape (m * n, m * n)
             Wing contribution to the influence matrix.
         """
-        r = self.vortex_panels.reshape(
-            (self.mesh.m * self.mesh.n, 1, 4, 3)
-        ) - self.cpoints.reshape((1, self.mesh.m * self.mesh.n, 1, 3))
+
+        # Number of panels
+        self.N_panels = np.sum([panels.shape[0] * panels.shape[1] for panels in self.all_panels])
+
+        # Convert to array
+        cpoints = np.asarray(self.all_cpoints)
+        vortex_panels = np.asarray(self.all_vortex_panels)
+        normals = np.asarray(self.all_normals)
+
+
+        r = vortex_panels.reshape(
+            (self.N_panels, 1, 4, 3)
+        ) - cpoints.reshape((1, self.N_panels, 1, 3))
 
         vel = biot_savart(r)
-        nv = self.normals.reshape((self.mesh.m * self.mesh.n, 3))
+        nv = normals.reshape((self.N_panels, 3))
         self.aic_wing = np.einsum("ijk,jk->ji", vel, nv)
 
     def _calculate_wake_wing_influence_matrix(self):
@@ -239,12 +251,30 @@ class VLM_solver:
         aic : np.ndarray, shape (m * n, m * n)
             Wake contribution to the influence matrix.
         """
-        mn = self.mesh.m * self.mesh.n
-        self.aic_wake = np.zeros((mn, mn))
-        r = self.wake[:, np.newaxis, :, :] - self.cpoints.reshape((1, mn, 1, 3))
-        vel = biot_savart(r)
-        nv = self.normals.reshape((mn, 3))
-        self.aic_wake[:, -self.mesh.n :] = np.einsum("ijk,jk->ji", vel, nv)
+
+        # Allocate final wake wing influence matix
+        self.all_aic_wake = np.zeros((self.N_panels, self.N_panels))
+
+        # Solve wake in each geometric part
+        for i, part in enumerate(self.all_parts):
+
+            # Convert to array
+            cpoints = np.asarray(self.all_cpoints)[i]
+            wake = self.all_wakes[i]
+            normals = np.asarray(self.all_normals)[i]
+            m, n= np.asarray(self.all_meshconf)[i,:]
+
+            r = wake[:, np.newaxis, :, :] - cpoints.reshape((1, m*n, 1, 3))
+            vel = biot_savart(r)
+            nv = normals.reshape((m * n, 3))
+
+            aic_wake = np.zeros((m * n, m * n))
+
+            aic_wake[:, -n :] = np.einsum("ijk,jk->ji", vel, nv)
+            print(aic_wake[0,:])
+            #self.all_aic_wake = np.append(self.all_aic_wake, aic_wake)
+
+
 
     def _calculate_influence_matrix(self):
         """
@@ -314,3 +344,5 @@ class VLM_solver:
             self._calculate_panel_normal_vectors()
             self._calculate_wing_planform_surface()
             self._build_wake()
+            self._calculate_wing_influence_matrix()
+            self._calculate_wake_wing_influence_matrix()
