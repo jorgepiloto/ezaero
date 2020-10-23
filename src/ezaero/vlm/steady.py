@@ -368,7 +368,16 @@ class VLM_solver:
 
             rho, Uinf = self.rho, self.Uinf
             bp = part.planform_wingspan
-            dL = circulation * rho * Uinf * bp / n
+            dL = np.zeros((m,n))
+
+            for i in range(m):
+                for j in range(n):
+                    if i == 1:
+                        ddL = circulation[i,j] * rho * Uinf * bp / n
+                    else:
+                        ddL = (circulation[i,j] - circulation[i-1, j]) * rho * Uinf * bp / n
+                    dL[i,j] = ddL
+
             dp = dL / surfaces
             cl = dp / (0.5 * rho * Uinf ** 2)
             cl_wing = dL.sum() / (0.5 * rho * Uinf ** 2 * surfaces.sum())
